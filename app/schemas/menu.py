@@ -1,4 +1,4 @@
-from typing import Optional, Annotated
+from typing import Optional, List, Annotated
 from decimal import Decimal
 from enum import Enum
 
@@ -118,3 +118,21 @@ class MenuItemResponse(MenuItemBase):
 
 class AvailabilityUpdate(BaseModel):
     is_available: bool
+
+
+# -----------------------------------------
+# SEARCH ITEM RESULT SCHEMA
+# -----------------------------------------
+
+class MenuItemWithRestaurant(BaseModel):
+    id: int
+    name: str
+    price: float
+    description: str | None
+
+    restaurant_name: str
+    restaurant_location: str
+
+    class Config:
+        from_attributes = True
+

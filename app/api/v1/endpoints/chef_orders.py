@@ -10,7 +10,6 @@ from app.models.order import OrderStatus
 
 from app.services.chef_order_services import (
     list_orders_for_kitchen,
-    _get_order_for_chef,
     accept_order,
     start_cooking,
     mark_ready,
@@ -19,6 +18,7 @@ from app.services.chef_order_services import (
     reject_order,
     assign_order,
     unassign_order,
+    get_order_items_with_name
 
     
 )
@@ -64,8 +64,7 @@ async def get_order(
     db: AsyncSession = Depends(get_db),
     current_chef=Depends(chef_required),
 ):
-    return await _get_order_for_chef(db, order_id, current_chef)
-
+    return await get_order_items_with_name(db, order_id, current_chef)
 
 @router.get("/orders/{order_id}/items")
 async def get_order_items(
@@ -73,9 +72,9 @@ async def get_order_items(
     db: AsyncSession = Depends(get_db),
     current_chef=Depends(chef_required),
 ):
-    order = await _get_order_for_chef(db, order_id, current_chef)
-    return order.items
+    order = await get_order_items_with_name(db, order_id, current_chef)
 
+    return order
 
 # ---------------------------------------------------------
 # STATUS TRANSITIONS

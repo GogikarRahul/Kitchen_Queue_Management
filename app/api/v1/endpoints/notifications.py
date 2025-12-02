@@ -28,24 +28,6 @@ def ensure_same_restaurant(current_chef, restaurant_id: int):
         )
 
 
-# -------------------------------------------------------
-# 1️⃣ LIST ALL NOTIFICATIONS (GLOBAL + PERSONAL)
-# -------------------------------------------------------
-@router.get("/restaurants/{restaurant_id}/notifications", response_model=list[NotificationOut])
-async def get_notifications(
-    restaurant_id: int,
-    chef_id: int | None = Query(None),
-    db: AsyncSession = Depends(get_db),
-    current_chef=Depends(chef_required),
-):
-    ensure_same_restaurant(current_chef, restaurant_id)
-
-    return await list_notifications(
-        db=db,
-        restaurant_id=restaurant_id,
-        chef_id=chef_id,
-        current_restaurant_id=current_chef.restaurant_id,
-    )
 
 
 # -------------------------------------------------------

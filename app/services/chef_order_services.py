@@ -5,34 +5,30 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
-from app.models.order import Order, OrderStatus, OrderPriority
+from app.models.order import Order, OrderStatus, OrderPriority,OrderItem
+from app.models.menu import MenuItem
 from app.models.chef import Chef
 from app.models.chef_activity import ChefActivityLog
 from app.schemas.chef import ChefNoteUpdate, ChefPriorityUpdate, ChefDelayUpdate
 
 
-# ---------------------------------------------------
-# Internal helper: fetch order and validate restaurant
-# ---------------------------------------------------
-async def _get_order_for_chef(
-    db: AsyncSession,
-    order_id: int,
-    current_chef: Chef,
-) -> Order:
-    """
-    Fetch an order and ensure it belongs to the same restaurant as the chef.
+async def get_order_items_with_name(db: AsyncSession, order_id: int,chef:Chef):
+    stmt = (
+        select(
+            OrderItem.id,
+            OrderItem.menu_item_id,
+            MenuItem.name.label("item_name"),
+            OrderItem.quantity,
+            OrderItem.unit_price,
+            OrderItem.total_price,
+            OrderItem.food_type,
+        )
+        .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
+        .where(OrderItem.order_id == order_id)
+    )
 
-    Corner cases handled:
-    - Order does not exist  -> 404
-    - Order belongs to another restaurant -> 404
-    """
-    result = await db.execute(select(Order).where(Order.id == order_id))
-    order = result.scalar_one_or_none()
-
-    if not order or order.restaurant_id != current_chef.restaurant_id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-
-    return order
+    result = await db.execute(stmt)
+    return result.mappings().all()
 
 
 # ---------------------------------------------------
@@ -68,7 +64,7 @@ def _set_status_fields(order: Order, new_status: OrderStatus) -> None:
     Corner cases:
     - Repeated transitions will overwrite timestamps (by design).
     """
-    now = datetime.utcnow()
+    now = datetime.now()
 
     if new_status == OrderStatus.accepted:
         order.accepted_at = now
@@ -173,7 +169,7 @@ async def accept_order(db: AsyncSession, order_id: int, current_chef: Chef) -> O
     Accept a pending order.
     Only orders in 'pending' can be accepted.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
     _ensure_status(order, [OrderStatus.pending], "accept")
 
     return await _change_status_and_log(
@@ -188,7 +184,7 @@ async def start_cooking(db: AsyncSession, order_id: int, current_chef: Chef) -> 
     """
     Move order from 'accepted' to 'cooking'.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
     _ensure_status(order, [OrderStatus.accepted], "start cooking")
 
     return await _change_status_and_log(
@@ -203,7 +199,7 @@ async def mark_ready(db: AsyncSession, order_id: int, current_chef: Chef) -> Ord
     """
     Move order from 'cooking' to 'ready'.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
     _ensure_status(order, [OrderStatus.cooking], "mark ready")
 
     return await _change_status_and_log(
@@ -218,7 +214,7 @@ async def complete_order(db: AsyncSession, order_id: int, current_chef: Chef) ->
     """
     Move order from 'ready' to 'completed'.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
     _ensure_status(order, [OrderStatus.ready], "complete")
 
     return await _change_status_and_log(
@@ -236,7 +232,7 @@ async def cancel_order(db: AsyncSession, order_id: int, current_chef: Chef) -> O
     NOTE: You may want stricter rules:
     - e.g. only allow cancelling 'pending' or 'accepted' orders.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
 
     if order.status in [OrderStatus.completed, OrderStatus.canceled, OrderStatus.rejected]:
         raise HTTPException(
@@ -259,7 +255,7 @@ async def reject_order(db: AsyncSession, order_id: int, current_chef: Chef) -> O
     """
     Reject an order only when it is in 'pending' state.
     """
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
     _ensure_status(order, [OrderStatus.pending], "reject")
 
     order.status = OrderStatus.rejected
@@ -273,7 +269,7 @@ async def reject_order(db: AsyncSession, order_id: int, current_chef: Chef) -> O
 
 async def assign_order(db: AsyncSession, order_id: int, current_chef: Chef):
 
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
 
     if order.assigned_chef_id and order.assigned_chef_id != current_chef.id:
         raise HTTPException(400, "Order already assigned to another chef")
@@ -288,7 +284,7 @@ async def assign_order(db: AsyncSession, order_id: int, current_chef: Chef):
 
 async def unassign_order(db: AsyncSession, order_id: int, current_chef: Chef):
 
-    order = await _get_order_for_chef(db, order_id, current_chef)
+    order = await get_order_items_with_name(db, order_id, current_chef)
 
     if order.assigned_chef_id != current_chef.id:
         raise HTTPException(403, "You are not assigned to this order")

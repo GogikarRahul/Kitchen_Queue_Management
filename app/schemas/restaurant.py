@@ -94,3 +94,4 @@ class RestaurantSettingsResponse(RestaurantSettingsBase):
 
     class Config:
         from_attributes = True
+

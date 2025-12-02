@@ -33,8 +33,15 @@ class OrderPriority(str, Enum):
 # -----------------------------------------
 
 class OrderItemBase(BaseModel):
-    item_id: int
-    quantity: PositiveInt   # quantity must be > 0
+    item_id: Optional[int] = None            # Priority 1
+    item_name: Optional[str] = None          # Fallback
+    quantity: PositiveInt                    # quantity must be > 0
+
+    @field_validator("item_name")
+    def validate_item_name(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("Item name cannot be empty or whitespace")
+        return v
 
 
 # -----------------------------------------
@@ -46,7 +53,7 @@ class OrderItemResponse(BaseModel):
     item_id: int
     quantity: int
     price: int   # SQL model uses INTEGER → stays int
-
+    item_name: str 
     class Config:
         from_attributes = True
 
@@ -56,16 +63,25 @@ class OrderItemResponse(BaseModel):
 # -----------------------------------------
 
 class OrderCreate(BaseModel):
-    restaurant_id: int
+    restaurant_id: Optional[int] = None        # Priority 1
+    restaurant_name: Optional[str] = None      # Fallback
+
     items: List[OrderItemBase]
+
     customer_name: Optional[str] = None
     mode: OrderMode
-    table_number: Optional[int] = Field(None, ge=1)   # must be positive if provided
+    table_number: Optional[int] = Field(None, ge=1)
 
     @field_validator("customer_name")
     def validate_customer_name(cls, v):
         if v is not None and not v.strip():
             raise ValueError("Customer name cannot be empty or whitespace")
+        return v
+
+    @field_validator("restaurant_name")
+    def validate_restaurant_name(cls, v):
+        if v is not None and not v.strip():
+            raise ValueError("Restaurant name cannot be empty or whitespace")
         return v
 
 

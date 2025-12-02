@@ -93,3 +93,25 @@ async def get_order_status(
         )
 
     return {"order_id": order.id, "status": order.status}
+
+# ============================
+# ❌ CANCEL ORDER (Customer)
+# ============================
+@router.post("/{order_id:int}/cancel", response_model=OrderResponse)
+async def cancel_my_order(
+    order_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_customer=Depends(customer_required),
+):
+    from app.services.order_service import cancel_order_by_customer
+
+    order, error = await cancel_order_by_customer(
+        db=db,
+        order_id=order_id,
+        current_customer=current_customer
+    )
+
+    if error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=error)
+
+    return order

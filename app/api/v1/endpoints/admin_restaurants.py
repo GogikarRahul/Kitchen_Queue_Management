@@ -64,17 +64,6 @@ async def create_restaurant_endpoint(
     return await create_restaurant(db, payload, current_admin.id)
 
 
-# ============================================================
-# LIST RESTAURANTS (Super admins can see all)
-# ============================================================
-
-# @router.get("/", response_model=List[RestaurantResponse])
-# async def list_restaurants_endpoint(
-#     db: AsyncSession = Depends(get_db),
-#     current_admin=Depends(admin_required),
-# ):
-#     return await list_restaurants(db)
-
 
 # ============================================================
 # GET RESTAURANT

@@ -16,7 +16,7 @@ from app.models.order import (
     OrderStatus,
     OrderStatusHistory,
 )
-from app.models.menu import MenuItem
+from app.models.menu import MenuItem,MenuCategory
 from app.models.restaurant import Restaurant
 
 from app.websocket.events import (
@@ -48,34 +48,90 @@ async def _validate_order_belongs_to_restaurant(order: Order, restaurant_id: int
 # ============================================================
 # 🔥 CUSTOMER CREATES ORDER
 # ============================================================
-
-
 async def create_customer_order(
     db: AsyncSession,
     payload,
     current_customer,
     background_tasks: BackgroundTasks,
 ):
-    # Validate restaurant exists
-    restaurant = await _validate_restaurant(db, payload.restaurant_id)
+    # ==============================================================
+    # 1️⃣ RESTAURANT PRIORITY → ID > NAME
+    # ==============================================================
+    restaurant = None
 
+    if payload.restaurant_id:  
+        # ID has top priority
+        restaurant = await _validate_restaurant(db, payload.restaurant_id)
+
+    elif payload.restaurant_name:  
+        # Search by name only if ID not provided
+        stmt = select(Restaurant).where(Restaurant.name.ilike(f"%{payload.restaurant_name}%"))
+        res = await db.execute(stmt)
+        restaurant = res.scalar_one_or_none()
+
+        if not restaurant:
+            return None, "Restaurant not found by name"
+
+        payload.restaurant_id = restaurant.id  # assign ID internally
+
+    else:
+        return None, "You must provide restaurant_id or restaurant_name"
+
+    # ==============================================================
+    # 2️⃣ ITEMS VALIDATION
+    # ==============================================================
     if not payload.items:
         return None, "Order must contain at least one item"
 
-    item_ids = [item.item_id for item in payload.items]
+    # Extract IDs for fast lookup
+    item_ids = [item.item_id for item in payload.items if item.item_id]
 
+    # Fetch items by ID first
     stmt = select(MenuItem).where(MenuItem.id.in_(item_ids))
     result = await db.execute(stmt)
     menu_items = {m.id: m for m in result.scalars().all()}
 
-    # Build order items
+    # ==============================================================
+    # 3️⃣ ITEM PRIORITY → ID > NAME
+    # ==============================================================
+    for item in payload.items:
+
+        # If item_id exists → use ID (highest priority)
+        if item.item_id:
+            if item.item_id not in menu_items:
+                return None, f"Menu item {item.item_id} not found"
+            continue
+
+        # Else use item_name if provided
+        if item.item_name:
+            item_stmt = (
+                select(MenuItem)
+                .join(MenuCategory)
+                .where(MenuItem.name.ilike(f"%{item.item_name}%"))
+                .where(MenuCategory.restaurant_id == payload.restaurant_id)
+            )
+            item_res = await db.execute(item_stmt)
+            found_item = item_res.scalar_one_or_none()
+
+            if not found_item:
+                return None, f"Menu item '{item.item_name}' not found in this restaurant"
+
+            # Assign found ID so existing logic works
+            item.item_id = found_item.id
+            menu_items[found_item.id] = found_item
+
+        else:
+            return None, "Each item must include item_id or item_name"
+
+    # ==================================================================
+    # 4️⃣ EXISTING ORDER CREATION LOGIC (UNCHANGED)
+    # ==================================================================
+
     order_items = []
     total_amount = Decimal("0.00")
 
     for item in payload.items:
         menu = menu_items.get(item.item_id)
-        if not menu:
-            return None, f"Menu item {item.item_id} not found"
         price = Decimal(str(menu.price))
         line_total = price * item.quantity
         total_amount += line_total
@@ -122,18 +178,16 @@ async def create_customer_order(
     await db.commit()
     await db.refresh(order)
 
-    # WebSocket push
+    # Send WebSocket push
     await push_new_order(order)
 
     # ==========================================================
-    # 📩 SEND EMAILS IN BACKGROUND
+    # 📩 EMAILS (same as before)
     # ==========================================================
 
-    # Restaurant owner
     owner_res = await db.execute(select(User).where(User.id == restaurant.owner_id))
     owner = owner_res.scalar_one_or_none()
 
-    # Email to customer
     if current_customer.email:
         background_tasks.add_task(
             send_email,
@@ -147,7 +201,6 @@ async def create_customer_order(
             """
         )
 
-    # Email to restaurant owner
     if owner and owner.email:
         background_tasks.add_task(
             send_email,
@@ -307,3 +360,32 @@ async def change_status(
 
 
 
+async def cancel_order_by_customer(
+    db: AsyncSession, order_id: int, current_customer
+):
+    # Fetch order belonging to this customer
+    result = await db.execute(
+        select(Order).where(
+            Order.id == order_id,
+            Order.customer_name == current_customer.name
+        )
+    )
+    order = result.scalar_one_or_none()
+
+    if not order:
+        return None, "Order not found"
+
+    # Allowed cancellation states
+    allowed = [OrderStatus.pending, OrderStatus.accepted]
+
+    if order.status not in allowed:
+        return None, f"Cannot cancel order in '{order.status}' state"
+
+    # Update status
+    order.status = OrderStatus.canceled
+    order.updated_at = datetime.now()
+
+    await db.commit()
+    await db.refresh(order)
+
+    return order, None

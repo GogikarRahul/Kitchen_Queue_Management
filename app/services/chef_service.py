@@ -85,8 +85,8 @@ async def update_chef_service(
         raise HTTPException(403, "You cannot update chefs from another restaurant")
 
     # Phone uniqueness check
-    if payload.phone is not None:
-        await _ensure_unique_phone(db, payload.phone, exclude_id=chef.id)
+    if payload.phone_number is not None:
+        await _ensure_unique_phone(db, payload.phone_number, exclude_id=chef.id)
 
     # Safe updates
     if payload.name is not None:
@@ -94,8 +94,8 @@ async def update_chef_service(
             raise HTTPException(400, "Name cannot be empty")
         chef.name = payload.name.strip()
 
-    if payload.phone is not None:
-        chef.phone_number = payload.phone
+    if payload.phone_number is not None:
+        chef.phone_number = payload.phone_number
 
     if payload.password is not None:
         if payload.password.strip() == "":
@@ -144,7 +144,7 @@ async def delete_chef_service(db: AsyncSession, chef_id: int, current_restaurant
 # CHEF LOGIN (ASYNC)
 # -------------------------------------------------
 async def chef_login_service(db: AsyncSession, phone: str, password: str):
-    stmt = select(Chef).where(Chef.phone == phone)
+    stmt = select(Chef).where(Chef.phone_number == phone)
     result = await db.execute(stmt)
     chef = result.scalar_one_or_none()
 
@@ -155,7 +155,7 @@ async def chef_login_service(db: AsyncSession, phone: str, password: str):
     if chef.status != "active":
         raise HTTPException(status_code=403, detail="Chef account is disabled")
 
-    if not verify_password(password, chef.password_hash):
+    if not verify_password(password, chef.password):
         raise HTTPException(status_code=401, detail="Invalid phone or password")
 
     return chef
