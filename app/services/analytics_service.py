@@ -2,9 +2,13 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
+from fastapi import HTTPException
+
 from app.models.order import Order, OrderStatus
 from app.models.order import OrderItem
 from app.models.menu import MenuItem
+from app.models.restaurant import Restaurant
+
 from app.schemas.analytics import (
     OrderCountAnalytics,
     VegVsNonVegAnalytics,
@@ -13,15 +17,55 @@ from app.schemas.analytics import (
 )
 
 
-async def get_order_counts(db: AsyncSession, restaurant_id: int) -> OrderCountAnalytics:
+# ============================================================
+# 🔍 Resolve Restaurant ID (by id or address)
+# ============================================================
+async def resolve_restaurant_id_by_address(
+    db: AsyncSession,
+    restaurant_id: int | None,
+    restaurant_address: str | None,
+) -> int:
+
+    # Priority 1 → ID
+    if restaurant_id:
+        return restaurant_id
+
+    # Priority 2 → Address
+    if restaurant_address:
+        stmt = select(Restaurant).where(Restaurant.address.ilike(f"%{restaurant_address}%"))
+        result = await db.execute(stmt)
+        restaurant = result.scalar_one_or_none()
+
+        if not restaurant:
+            raise HTTPException(404, "Restaurant not found for given address")
+
+        return restaurant.id
+
+    raise HTTPException(400, "You must provide restaurant_id or restaurant_address")
+
+
+# ============================================================
+# 📊 ORDER COUNTS ANALYTICS
+# ============================================================
+async def get_order_counts(
+    db: AsyncSession,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None
+) -> OrderCountAnalytics:
+
+    resolved_id = await resolve_restaurant_id_by_address(db, restaurant_id, restaurant_address)
+
     result = await db.execute(
         select(Order.status, func.count())
-        .where(Order.restaurant_id == restaurant_id)
+        .where(Order.restaurant_id == resolved_id)
         .group_by(Order.status)
     )
+
     counts = {row[0]: row[1] for row in result.all()}
     total = sum(counts.values())
-    def c(s: OrderStatus): return counts.get(s, 0)
+
+    def c(s: OrderStatus):
+        return counts.get(s, 0)
 
     return OrderCountAnalytics(
         total_orders=total,
@@ -35,15 +79,25 @@ async def get_order_counts(db: AsyncSession, restaurant_id: int) -> OrderCountAn
     )
 
 
-async def get_veg_vs_nonveg(db: AsyncSession, restaurant_id: int) -> VegVsNonVegAnalytics:
-    # join Order -> OrderItem -> MenuItem
+# ============================================================
+# 🥗 VEG vs NON-VEG ANALYTICS
+# ============================================================
+async def get_veg_vs_nonveg(
+    db: AsyncSession,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None
+) -> VegVsNonVegAnalytics:
+
+    resolved_id = await resolve_restaurant_id_by_address(db, restaurant_id, restaurant_address)
+
     stmt = (
         select(MenuItem.food_type, func.count(), func.sum(OrderItem.total_price))
-        .join(OrderItem, OrderItem.id == MenuItem.id)
+        .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
         .join(Order, Order.id == OrderItem.order_id)
-        .where(Order.restaurant_id == restaurant_id)
+        .where(Order.restaurant_id == resolved_id)
         .group_by(MenuItem.food_type)
     )
+
     result = await db.execute(stmt)
     rows = result.all()
 
@@ -67,20 +121,30 @@ async def get_veg_vs_nonveg(db: AsyncSession, restaurant_id: int) -> VegVsNonVeg
     )
 
 
-async def get_preparation_time_stats(db: AsyncSession, restaurant_id: int) -> PreparationTimeAnalytics:
-    # completed orders with accepted_at & completed_at
+# ============================================================
+# ⏱️ PREPARATION TIME ANALYTICS
+# ============================================================
+async def get_preparation_time_stats(
+    db: AsyncSession,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None
+) -> PreparationTimeAnalytics:
+
+    resolved_id = await resolve_restaurant_id_by_address(db, restaurant_id, restaurant_address)
+
     stmt = (
         select(
             Order.id,
             func.extract("epoch", Order.completed_at - Order.accepted_at),
         )
         .where(
-            Order.restaurant_id == restaurant_id,
+            Order.restaurant_id == resolved_id,
             Order.status == OrderStatus.completed,
             Order.completed_at.isnot(None),
             Order.accepted_at.isnot(None),
         )
     )
+
     result = await db.execute(stmt)
     times = [row[1] for row in result.all() if row[1] is not None]
 
@@ -96,7 +160,6 @@ async def get_preparation_time_stats(db: AsyncSession, restaurant_id: int) -> Pr
     fastest = min(times)
     slowest = max(times)
 
-    # time per item (simple: average over all completed orders per item)
     stmt_items = (
         select(
             OrderItem.id,
@@ -104,13 +167,14 @@ async def get_preparation_time_stats(db: AsyncSession, restaurant_id: int) -> Pr
         )
         .join(Order, Order.id == OrderItem.order_id)
         .where(
-            Order.restaurant_id == restaurant_id,
+            Order.restaurant_id == resolved_id,
             Order.status == OrderStatus.completed,
             Order.completed_at.isnot(None),
             Order.accepted_at.isnot(None),
         )
         .group_by(OrderItem.id)
     )
+
     result_items = await db.execute(stmt_items)
     time_per_item = {
         row[0]: float(row[1]) for row in result_items.all() if row[1] is not None
@@ -124,6 +188,9 @@ async def get_preparation_time_stats(db: AsyncSession, restaurant_id: int) -> Pr
     )
 
 
+# ============================================================
+# 📅 PERIOD REPORT (daily / weekly / monthly)
+# ============================================================
 async def _period_bounds(period: str) -> tuple[datetime, datetime]:
     now = datetime.now()
     if period == "daily":
@@ -135,26 +202,31 @@ async def _period_bounds(period: str) -> tuple[datetime, datetime]:
         end = start + timedelta(days=7)
     elif period == "monthly":
         start = datetime(now.year, now.month, 1)
-        if now.month == 12:
-            end = datetime(now.year + 1, 1, 1)
-        else:
-            end = datetime(now.year, now.month + 1, 1)
+        end = datetime(now.year + (now.month // 12), (now.month % 12) + 1, 1)
     else:
         raise ValueError("Invalid period")
     return start, end
 
 
-async def get_period_report(db: AsyncSession, restaurant_id: int, period: str) -> PeriodReport:
+async def get_period_report(
+    db: AsyncSession,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
+    period: str = "daily"
+) -> PeriodReport:
+
+    resolved_id = await resolve_restaurant_id_by_address(db, restaurant_id, restaurant_address)
     start, end = await _period_bounds(period)
 
     stmt_orders = (
         select(Order)
         .where(
-            Order.restaurant_id == restaurant_id,
+            Order.restaurant_id == resolved_id,
             Order.created_at >= start,
             Order.created_at < end,
         )
     )
+
     result = await db.execute(stmt_orders)
     orders = result.scalars().all()
 
@@ -162,21 +234,20 @@ async def get_period_report(db: AsyncSession, restaurant_id: int, period: str) -
     completed_orders = sum(1 for o in orders if o.status == OrderStatus.completed)
     canceled_orders = sum(1 for o in orders if o.status == OrderStatus.canceled)
     pending_orders = sum(1 for o in orders if o.status == OrderStatus.pending)
-
     total_revenue = sum(o.total_amount for o in orders)
 
-    # veg/nonveg stats
     stmt_items = (
         select(MenuItem.food_type, func.sum(OrderItem.total_price))
-        .join(OrderItem, OrderItem.id == MenuItem.id)
+        .join(OrderItem, OrderItem.menu_item_id == MenuItem.id)
         .join(Order, Order.id == OrderItem.order_id)
         .where(
-            Order.restaurant_id == restaurant_id,
+            Order.restaurant_id == resolved_id,
             Order.created_at >= start,
             Order.created_at < end,
         )
         .group_by(MenuItem.food_type)
     )
+
     result_items = await db.execute(stmt_items)
     veg_orders = non_veg_orders = 0
     veg_revenue = non_veg_revenue = 0
@@ -184,21 +255,18 @@ async def get_period_report(db: AsyncSession, restaurant_id: int, period: str) -
     for food_type, revenue in result_items.all():
         revenue = revenue or 0
         if food_type == "veg":
-            veg_revenue += revenue
             veg_orders += 1
+            veg_revenue += revenue
         else:
-            non_veg_revenue += revenue
             non_veg_orders += 1
+            non_veg_revenue += revenue
 
-    # avg preparation time
     stmt_time = (
         select(
-            func.avg(
-                func.extract("epoch", Order.completed_at - Order.accepted_at)
-            )
+            func.avg(func.extract("epoch", Order.completed_at - Order.accepted_at))
         )
         .where(
-            Order.restaurant_id == restaurant_id,
+            Order.restaurant_id == resolved_id,
             Order.created_at >= start,
             Order.created_at < end,
             Order.status == OrderStatus.completed,
@@ -206,9 +274,10 @@ async def get_period_report(db: AsyncSession, restaurant_id: int, period: str) -
             Order.accepted_at.isnot(None),
         )
     )
+
     avg_time_result = await db.execute(stmt_time)
     avg_time = avg_time_result.scalar_one_or_none()
-    avg_time_f = float(avg_time) if avg_time is not None else None
+    avg_time_f = float(avg_time) if avg_time else None
 
     return PeriodReport(
         start_date=start,

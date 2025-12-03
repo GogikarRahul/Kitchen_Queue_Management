@@ -10,6 +10,7 @@ from app.api.deps import admin_required
 from app.db.session import get_db
 from sqlalchemy import select
 from app.models.chef import Chef
+from app.models.restaurant import Restaurant
 # Schemas
 from app.schemas.restaurant import (
     RestaurantCreate,
@@ -63,6 +64,17 @@ async def create_restaurant_endpoint(
     # Pass owner ID to service
     return await create_restaurant(db, payload, current_admin.id)
 
+
+
+@router.get("/", response_model=list[RestaurantResponse])
+async def get_my_restaurants(
+    db: AsyncSession = Depends(get_db),
+    current_admin=Depends(admin_required),
+):
+    result = await db.execute(
+        select(Restaurant).where(Restaurant.owner_id == current_admin.id)
+    )
+    return result.scalars().all()
 
 
 # ============================================================

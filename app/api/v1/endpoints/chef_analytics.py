@@ -23,6 +23,7 @@ from app.services.analytics_service import (
     get_veg_vs_nonveg,
     get_preparation_time_stats,
     get_period_report,
+    resolve_restaurant_id_by_address,
 )
 
 router = APIRouter(
@@ -32,16 +33,22 @@ router = APIRouter(
 
 
 # -----------------------------------------------------------
-# Helper: Validate admin owns restaurant
+# Validate that admin owns the restaurant (by id or address)
 # -----------------------------------------------------------
-
-async def ensure_admin_owns_restaurant(
+async def ensure_admin_owns_restaurant_flexible(
     db: AsyncSession,
-    restaurant_id: int,
+    restaurant_id: int | None,
+    restaurant_address: str | None,
     admin_user
-):
+) -> int:
+
+    # This resolves ID from either restaurant_id or restaurant_address
+    resolved_id = await resolve_restaurant_id_by_address(
+        db, restaurant_id, restaurant_address
+    )
+
     result = await db.execute(
-        select(Restaurant).where(Restaurant.id == restaurant_id)
+        select(Restaurant).where(Restaurant.id == resolved_id)
     )
     restaurant = result.scalar_one_or_none()
 
@@ -54,133 +61,142 @@ async def ensure_admin_owns_restaurant(
             detail="You do not own this restaurant."
         )
 
-    return restaurant
+    return restaurant.id  # return validated ID
 
 
 # -----------------------------------------------------------
 # ORDER COUNT ANALYTICS
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/analytics/orders/count",
+@router.get("/restaurants/analytics/orders/count",
             response_model=OrderCountAnalytics)
 async def orders_count(
-    restaurant_id: int,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_order_counts(db, restaurant_id)
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_order_counts(
+        db, restaurant_id=resolved_id
+    )
 
 
 # -----------------------------------------------------------
 # VEG VS NON-VEG ANALYTICS
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/analytics/veg-vs-nonveg",
+@router.get("/restaurants/analytics/veg-vs-nonveg",
             response_model=VegVsNonVegAnalytics)
 async def veg_vs_nonveg(
-    restaurant_id: int,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_veg_vs_nonveg(db, restaurant_id)
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_veg_vs_nonveg(db, restaurant_id=resolved_id)
 
 
 # -----------------------------------------------------------
 # PREPARATION TIME ANALYTICS
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/analytics/preparation-time",
+@router.get("/restaurants/analytics/preparation-time",
             response_model=PreparationTimeAnalytics)
-async def prep_time(
-    restaurant_id: int,
+async def preparation_time(
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_preparation_time_stats(db, restaurant_id)
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_preparation_time_stats(db, restaurant_id=resolved_id)
 
 
 # -----------------------------------------------------------
 # DAILY REPORT
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/reports/daily",
+@router.get("/restaurants/reports/daily",
             response_model=PeriodReport)
 async def daily_report(
-    restaurant_id: int,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_period_report(db, restaurant_id, "daily")
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_period_report(db, resolved_id, "daily")
 
 
 # -----------------------------------------------------------
 # WEEKLY REPORT
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/reports/weekly",
+@router.get("/restaurants/reports/weekly",
             response_model=PeriodReport)
 async def weekly_report(
-    restaurant_id: int,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_period_report(db, restaurant_id, "weekly")
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_period_report(db, resolved_id, "weekly")
 
 
 # -----------------------------------------------------------
 # MONTHLY REPORT
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/reports/monthly",
+@router.get("/restaurants/reports/monthly",
             response_model=PeriodReport)
 async def monthly_report(
-    restaurant_id: int,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-    return await get_period_report(db, restaurant_id, "monthly")
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+    return await get_period_report(db, resolved_id, "monthly")
 
 
 # -----------------------------------------------------------
-# DOWNLOAD REPORT (CSV)
+# DOWNLOAD REPORT CSV
 # -----------------------------------------------------------
-
-@router.get("/restaurants/{restaurant_id}/reports/{period}/download")
+@router.get("/restaurants/reports/{period}/download")
 async def download_report_csv(
-    restaurant_id: int,
     period: str,
+    restaurant_id: int | None = None,
+    restaurant_address: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_admin=Depends(admin_required),
 ):
-    await ensure_admin_owns_restaurant(db, restaurant_id, current_admin)
-
     if period not in ("daily", "weekly", "monthly"):
         raise HTTPException(400, "Invalid report period")
 
-    report = await get_period_report(db, restaurant_id, period)
+    resolved_id = await ensure_admin_owns_restaurant_flexible(
+        db, restaurant_id, restaurant_address, current_admin
+    )
+
+    report = await get_period_report(db, resolved_id, period)
 
     output = io.StringIO()
     writer = csv.writer(output)
 
     writer.writerow([
-        "start_date",
-        "end_date",
-        "total_orders",
-        "completed_orders",
-        "canceled_orders",
-        "pending_orders",
-        "veg_orders",
-        "non_veg_orders",
-        "total_revenue",
-        "veg_revenue",
-        "non_veg_revenue",
-        "avg_preparation_time_seconds",
+        "start_date", "end_date", "total_orders",
+        "completed_orders", "canceled_orders", "pending_orders",
+        "veg_orders", "non_veg_orders",
+        "total_revenue", "veg_revenue", "non_veg_revenue",
+        "avg_preparation_time_seconds"
     ])
 
     writer.writerow([
@@ -199,8 +215,7 @@ async def download_report_csv(
     ])
 
     output.seek(0)
-
-    filename = f"{period}_report_restaurant_{restaurant_id}.csv"
+    filename = f"{period}_report_restaurant_{resolved_id}.csv"
 
     return StreamingResponse(
         output,
